@@ -24,6 +24,7 @@ curl -s -o /dev/null -w "  /login: %{http_code}\n" http://127.0.0.1:9119/login
 if grep -qs "zh-overlay.js" "$REPO/hermes_cli/web_dist/index.html"; then
   echo "  覆盖层：已挂载"
 else
-  echo "  覆盖层：⚠ 未挂载"
+  echo "  覆盖层：⚠ 未挂载（重新执行 inject_overlay.py）"
+  exit 1
 fi
 echo "完成。手机上下拉刷新即可看到新版本。"

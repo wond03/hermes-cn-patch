@@ -89,7 +89,12 @@ if [ "$BUILD" = "1" ]; then
   if [ -f "$HERE/tools/inject_pwa.py" ]; then
     python3 "$HERE/tools/inject_pwa.py" "$REPO" >/dev/null 2>&1 || true
   fi
-  echo "✓ 覆盖层已挂载"
+  if grep -q "zh-overlay.js" "$REPO/hermes_cli/web_dist/index.html"; then
+    echo "✓ 覆盖层已挂载（词典 $(grep -c '": "' "$HERE/payload/zhOverlay.js") 条）"
+  else
+    echo "✗ 覆盖层没有挂上（index.html 里找不到 zh-overlay.js），请检查 tools/inject_overlay.py"
+    exit 1
+  fi
   if systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE}\.service"; then
     systemctl restart "$SERVICE"
     sleep 8
