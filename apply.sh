@@ -29,6 +29,13 @@ done
 cd "$REPO"
 
 HEAD=$(git rev-parse HEAD)
+# 构建用的 npm 可能在 Hermes 自带的 node 里
+if ! command -v npm >/dev/null 2>&1; then
+  for d in "$HOME"/.hermes/tools/node-*/bin; do
+    [ -x "$d/npm" ] && { export PATH="$d:$PATH"; break; }
+  done
+fi
+
 echo "目标仓库：$REPO"
 echo "当前版本：$(git rev-parse --short HEAD)"
 if [ "$HEAD" != "$BASE_COMMIT" ]; then

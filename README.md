@@ -1,94 +1,133 @@
-# Hermes Agent 中文补丁（hermes-cn-patch）
+# Hermes Agent 中文补丁（Linux 云服务器版）
 
-给 [Nous Research 的 Hermes Agent](https://github.com/NousResearch/hermes-agent) 补上**完整的网页端中文界面**，并修掉几个手机上最难用的地方。
+给 [Nous Research 的 Hermes Agent](https://github.com/NousResearch/hermes-agent) 装上**完整中文的网页控制台**，并修掉手机上最难用的几处。面向 **Linux 云服务器**：解压 → 跑一条命令 → 浏览器打开就是中文。
 
-> 非官方补丁。只在 **v0.22.5（commit `bf0203a`）** 上逐条验证过，其它版本可能部分失败。
+> 非官方补丁，基于 **v0.22.5（commit `bf0203a`）** 逐条验证。
 
-## 为什么有这个项目
+## 一条命令装完
 
-Hermes 自带 CLI 和 TUI 的中文（`locales/zh.yaml` 3500+ 条全译），但**网页控制台**是另一套：英文词条分散在 React 组件里、配置页 900 多条字段说明写死在 Python 里，上游的 `zh.ts` 只覆盖了一部分。
+```bash
+# 已经装好 Hermes Agent（~/.hermes/hermes-agent 存在）
+sudo ./install.sh
+```
 
-社区现有的两个中文项目：
+没装 Hermes？加一个参数，脚本会先跑官方安装再打补丁：
 
-| 项目 | 覆盖范围 | 对 v0.22.5 |
+```bash
+sudo ./install.sh --install-hermes
+```
+
+安装完会打印：
+
+```
+控制台：http://<你的公网IP>:9119
+用户名：admin
+密码：  <随机生成，或沿用你原来设置的>
+```
+
+## 装完你会得到什么
+
+| 位置 | 之前 | 现在 |
 |---|---|---|
-| [fresh-claw/hermes-zh-cn](https://github.com/fresh-claw/hermes-zh-cn) | 启动页、TUI、快捷指令（版本门控 ≤0.15） | ❌ 版本不匹配 |
-| [xyshanren/hermes-agent-cn](https://github.com/xyshanren/hermes-agent-cn) | CLI 硬编码英文抽成 i18n（整仓 fork） | ⚠️ 网页端未覆盖 |
+| 登录页 | 全英文（后端 Python 渲染） | 中文，跟随 `display.language` |
+| 侧边栏 | 文件/MCP/渠道/Webhook… 硬编码英文 | 全部中文 |
+| 配置页 | 908 条字段说明全英文 | 中文说明，搜索框支持中文关键词 |
+| 系统页/模型页/文件页 | 组件里写死英文 | 796 条运行时词典覆盖 |
+| 手机对话页 | 只能敲终端、不能发图片 | 输入栏：换行、附件上传、审批按钮、字号、翻页 |
+| 删除会话 | 必报 409（网关占锁） | 55ms 删除，不重启网关 |
 
-所以这个补丁补齐的是**网页端**这一块。
+| 登录页 | 配置页 | 手机输入栏 |
+|---|---|---|
+| ![](docs/images/login.png) | ![](docs/images/config.png) | ![](docs/images/composer.png) |
 
-## 包含什么
+## 脚本做了什么
 
-| 补丁 | 内容 |
+1. **体检**：系统/架构/磁盘/内存/npm 可达性
+2. **定位**：找 `~/.hermes/hermes-agent`，校验 commit
+3. **打补丁**：`git apply` 6 个按主题拆分的 diff（可重复执行，已打的会跳过）
+4. **构建**：`npm run build` → 挂载运行时词典 + PWA 清单
+5. **常驻**：创建 systemd 服务 `hermes-dashboard`（已存在则不动）
+6. **登录**：没设密码就生成一个随机密码并打印
+
+约 2 分钟。前端依赖已随 Hermes 装好，正常不需要额外装包。
+
+## 防火墙 / 安全组
+
+```bash
+# Ubuntu/Debian
+ufw allow 9119/tcp
+# CentOS/RHEL
+firewall-cmd --add-port=9119/tcp --permanent && firewall-cmd --reload
+```
+
+**云厂商安全组**（阿里云、腾讯云、华为云…）还要在控制台加一条：入站 `TCP:9119`，源 `0.0.0.0/0` 或你的固定 IP。这一步脚本做不了。
+
+## 常用操作
+
+```bash
+sudo ./install.sh --check     # 只体检，不动系统
+sudo ./install.sh --no-build  # 只打源码，不构建
+sudo ./reset.sh               # 撤掉补丁，恢复上游原样
+sudo ./uninstall.sh           # 撤补丁（加 --service 连服务一起停）
+sudo ./rebuild.sh             # 改完源码后重建 + 挂词典 + 重启
+```
+
+升级 Hermes 前**务必先** `./reset.sh`，升级后再 `./apply.sh`（或重跑 `install.sh`）。
+
+## 兼容性
+
+| 项目 | 状态 |
 |---|---|
-| `01-i18n-core` | `zh.ts` 补 114 条缺失词条 + 侧边栏 8 个硬编码菜单；默认语言改为跟随服务端 `display.language`（原来写死 `en`） |
-| `02-config-descriptions` | 配置页 908 条字段说明中文对照表（`payload/configDescZh.ts`）+ `AutoField` 按语言替换 + 搜索框支持中文 |
-| `03-login-page` | 登录页由 Python 渲染、上游全英文；注入中文文案，跟随 `display.language` |
-| `04-chat-mobile-ux` | 手机端输入栏（回车换行 / 附件上传 / 审批可点 / 字号 / 翻页）、`/files?path=` 直达、终端触摸滚动 |
-| `05-session-delete` | 网关新增 `POST /api/sessions/bulk-delete`，面板遇锁冲突转给网关 —— 删除从 15 秒降到 55 毫秒，且不重启网关 |
-| `06-update-lock` | `/root/.../LOCK` 存在时拒绝网页端「更新 Hermes」，避免一键把补丁冲掉 |
-| `payload/zhOverlay.js` | 运行时覆盖层：796 条词典 + 动态规则，补齐组件里写死的英文（系统页、模型页、文件页…） |
+| Ubuntu 24.04 x86_64 | ✅ 实测（补丁就是在这台腾讯云机器上开发验证的） |
+| Debian 12 / Ubuntu 22.04 | ✅ 理论可行（同 systemd + apt 体系，未单独跑） |
+| CentOS / Rocky / Alma | ⚠️ 需 `firewalld` + 自己装 node/npm，脚本未适配 |
+| aarch64 云主机 | ⚠️ 补丁与架构无关，但 Hermes 官方 arm 包未验证 |
+| Hermes 其它版本 | ❌ 仅 v0.22.5 验证；新版可能补丁匹配失败（脚本逐个报告，不会半途中断） |
 
-## 效果
+## 常见问题
 
-| 登录页 | 侧边栏 | 配置页 |
-|---|---|---|
-| ![](docs/images/login.png) | ![](docs/images/sidebar.png) | ![](docs/images/config.png) |
+**npm registry 不可达，构建失败**
+配国内镜像：`npm config set registry https://registry.npmmirror.com`，再重跑 `./install.sh`。
 
-| 手机输入栏 | 审批可点 | 文件页 |
-|---|---|---|
-| ![](docs/images/composer.png) | ![](docs/images/approval.png) | ![](docs/images/files.png) |
+**1G 内存的机器构建被 OOM 杀掉**
+加 swap：`fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile`。
 
-## 快速开始
+**9119 被占用**
+换端口：`sudo PORT=9120 ./install.sh`。
 
-前提：已经用官方脚本装好 Hermes Agent **v0.22.5**，源码在 `~/.hermes/hermes-agent`。
-
+**忘记密码**
 ```bash
-git clone <this-repo> ~/hermes-cn-patch
-cd ~/hermes-cn-patch
-
-./apply.sh --check     # 先看能不能干净应用
-./apply.sh             # 应用 + 构建 + 重启（约 2 分钟）
+hermes config set dashboard.basic_auth.password '新密码'
+systemctl restart hermes-dashboard
 ```
 
-打开 `http://<你的地址>:9119`，若之前手动切过英文，点左下角语言芯片选「简体中文」。
+**想回到英文**
+`./reset.sh` 然后 `cd ~/.hermes/hermes-agent/web && npm run build`，重启服务。
 
-回滚：
+## 安全提醒
 
-```bash
-./reset.sh             # 反向应用所有补丁
-./apply.sh --restore   # 或从最近一次备份覆盖
-```
+Hermes 的网页控制台本质是一个**能执行命令的终端**，默认以 root 运行。装上这个补丁不改变这一点。请至少做到：
 
-## 工作原理
-
-1. **词条层**：直接改 `web/src/i18n/zh.ts`，缺的键补上；`context.tsx` 的语言优先级改为 `手动选择 > 服务端 display.language > 浏览器 > en`。
-2. **配置说明层**：新增 `configDescZh.ts`（908 条，按 schema key 索引），`AutoField` 在中文界面下查表替换；不改后端英文源。
-3. **运行时覆盖层**：`zhOverlay.js` 在页面渲染后按字典替换剩余英文，跳过 `pre/code/input/terminal`，所以文件名、日志、代码不会被误翻。
-4. **删除会话**：面板是独立进程，删除要先拿会话库独占锁，而网关一直持有它 → 上游必然 409。补丁让锁的持有者（网关）自己删，面板只做转发。
-
-## 已知限制
-
-- **只验证 v0.22.5**。上游改前端结构后，`01/04` 两个补丁会匹配失败（脚本会逐个报告，不会半途中断）。
-- **配置说明是模型翻译 + 抽检**，不是逐条人工校对；个别措辞偏机翻。发现别扭的条目，改 `payload/configDescZh.ts` 对应 key 即可。
-- **覆盖层是字符串精确匹配**，动态拼接的句子可能只翻一半；`aria-label` 也会被翻译（屏幕阅读器读中文）。
-- **`hermes update` 会覆盖源码**：升级前务必 `./reset.sh`，升级后重新 `./apply.sh`。补丁里带了版本锁定，但只拦网页按钮。
-- 仓库自带的 e2e 测试按英文文案定位元素，打了覆盖层后跑 `npm test` 可能失败——不影响使用。
+- 不要用弱密码；只在自己可信的网络上开放端口
+- 想彻底收敛暴露面：面板只监听 `127.0.0.1`，用 SSH 隧道访问（`ssh -L 9119:127.0.0.1:9119 root@你的IP`）
+- 读一遍 [`docs/SECURITY.md`](docs/SECURITY.md)：审批层怎么配、哪些路径被硬拦
 
 ## 目录结构
 
 ```
-apply.sh / reset.sh      打补丁 / 撤回
-rebuild.sh               改完源码后重建 + 挂载覆盖层
-snapshot.sh              源码 + 产物 + 配置打包备份
-patches/*.patch          按主题拆分的 diff（基于 bf0203a）
-payload/                 补丁之外的新增文件（词条表、覆盖层）
-tools/                   构建后注入脚本
-docs/                    版本锁定、安全策略、截图
+install.sh          一键安装（体检 → 补丁 → 构建 → 服务 → 密码）
+apply.sh            只打补丁（可被 CI 或其它脚本调用）
+reset.sh            反向应用，恢复上游
+uninstall.sh        撤补丁 / 连服务一起停
+rebuild.sh          改完源码后重建
+patches/            6 个按主题拆分的 diff（基于 bf0203a）
+payload/            补丁之外的新增文件（908 条配置说明、796 条运行时词典）
+tools/              构建后注入脚本、补丁导出脚本
+docs/               安全策略、版本锁定、截图
 ```
 
 ## 许可
 
-MIT。修改的源码来自 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)（MIT, © Nous Research），衍生部分同样以 MIT 发布，详见 `LICENSE` 与 `NOTICE`。
+MIT。修改的源码来自 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)（MIT, © Nous Research），以 diff 形式提供；衍生部分同样 MIT，详见 `LICENSE` 与 `NOTICE`。
 
-不是官方项目，与 Nous Research 无关联。用之前请先读 `docs/SECURITY.md`：这套东西运行在 root 下，能做的事等于 root。
+与 Nous Research 无关联，未获其背书。
