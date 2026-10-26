@@ -2,6 +2,10 @@
 
 给 [Nous Research 的 Hermes Agent](https://github.com/NousResearch/hermes-agent) 装上**完整中文的网页控制台**，并修掉手机上最难用的几处。面向 **Linux 云服务器**：解压 → 跑一条命令 → 浏览器打开就是中文。
 
+> **先看这个**：界面汉化有更省事的方式——装插件 [hermes-zh](https://github.com/wond03/hermes-zh-plugin)。不用构建、`hermes update` 不会冲掉、覆盖 2600+ 条文案（含配置说明和插件市场简介）。
+>
+> 只有这几种情况才需要本补丁：① 手机端要可见输入栏和发图；② 删除会话报 409；③ 「更新 Hermes」在锁定状态下误执行；④ 登录页也要中文。
+>
 > 非官方补丁，基于 **v0.22.5（commit `bf0203a`）** 逐条验证。
 
 ## 一条命令装完
