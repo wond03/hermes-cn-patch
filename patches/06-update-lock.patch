@@ -1,0 +1,25 @@
+diff --git a/hermes_cli/web_routers/actions.py b/hermes_cli/web_routers/actions.py
+index df183e424b..2a1b66d84f 100644
+--- a/hermes_cli/web_routers/actions.py
++++ b/hermes_cli/web_routers/actions.py
+@@ -241,6 +241,20 @@ def _update_refused(error: str, message: str, update_command: str) -> dict[str,
+ @router.post("/api/hermes/update")
+ async def update_hermes():
+     """Kick off ``hermes update`` in the background."""
++    # 本机版本锁定（自维护）：/root/hermes-zh-patch/LOCK 存在时拒绝网页端升级，
++    # 避免点一下按钮就把中文补丁冲掉。删掉该文件即恢复原行为。
++    _pin = Path("/root/hermes-zh-patch/LOCK")
++    if _pin.exists():
++        try:
++            _pin_msg = _pin.read_text(encoding="utf-8").strip()
++        except OSError:
++            _pin_msg = ""
++        return _update_refused(
++            "pinned_version",
++            _pin_msg or "本机已锁定 Hermes 版本，禁止在网页端升级。",
++            "",
++        )
++
+     if is_commit_build(_server_path("PROJECT_ROOT")):
+         return _update_refused("commit-build", COMMIT_BUILD_UPDATE_MESSAGE, "")
+ 

@@ -1,0 +1,95 @@
+diff --git a/hermes_cli/dashboard_auth/login_page.py b/hermes_cli/dashboard_auth/login_page.py
+index 099154764d..79fe61c7a6 100644
+--- a/hermes_cli/dashboard_auth/login_page.py
++++ b/hermes_cli/dashboard_auth/login_page.py
+@@ -445,6 +445,69 @@ _PASSWORD_FORM_SCRIPT = """\
+ </script>
+ """
+ 
++# --- 中文补丁（由 /root/hermes-zh-patch 注入，hermes update 后需重打） ---
++_ZH_LOGIN_SCRIPT = """
++<script>
++(function () {
++  // 服务器 display.language 优先（由 Python 侧注入），否则看浏览器语言
++  var forced = String(window.__HERMES_LOGIN_LANG__ || "").toLowerCase();
++  var zh = "";
++  if (forced.indexOf("zh") === 0) {
++    zh = /hant|tw|hk|mo/.test(forced) ? "zh-hant" : "zh";
++  } else if (!forced) {
++    var langs = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || ""];
++    for (var i = 0; i < langs.length; i++) {
++      var t = String(langs[i] || "").toLowerCase();
++      if (t.indexOf("zh") === 0) { zh = /hant|tw|hk|mo/.test(t) ? "zh-hant" : "zh"; break; }
++    }
++  }
++  if (!zh) return;
++  document.documentElement.lang = zh;
++  if (document.title.indexOf("Sign in") === 0) document.title = "\u767b\u5f55 \u2014 Hermes Agent";
++  var map = {
++    "Sign in": "\u767b\u5f55",
++    "Choose a sign-in method to continue to the Hermes Agent dashboard.": "\u9009\u62e9\u4e00\u79cd\u767b\u5f55\u65b9\u5f0f\uff0c\u8fdb\u5165 Hermes Agent \u63a7\u5236\u53f0\u3002",
++    "Sign in with Username & Password": "\u4f7f\u7528\u7528\u6237\u540d\u548c\u5bc6\u7801\u767b\u5f55",
++    "Username": "\u7528\u6237\u540d",
++    "Password": "\u5bc6\u7801",
++    "Public bind \u00b7 Auth required": "\u516c\u7f51\u8bbf\u95ee \u00b7 \u9700\u8981\u767b\u5f55",
++    "Invalid username or password.": "\u7528\u6237\u540d\u6216\u5bc6\u7801\u9519\u8bef\u3002",
++    "Sign-in failed. Please try again.": "\u767b\u5f55\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u3002",
++    "Network error. Please try again.": "\u7f51\u7edc\u5f02\u5e38\uff0c\u8bf7\u91cd\u8bd5\u3002"
++  };
++  function tr(node) {
++    var raw = node.nodeValue;
++    if (!raw) return;
++    var t = raw.trim();
++    if (!t) return;
++    var out = map[t];
++    if (!out && t.indexOf("Sign in with ") === 0) out = "\u4f7f\u7528 " + t.slice(13) + " \u767b\u5f55";
++    if (out && out !== t) node.nodeValue = raw.replace(t, out);
++  }
++  function walk(root) {
++    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
++    var n, list = [];
++    while ((n = walker.nextNode())) list.push(n);
++    for (var i = 0; i < list.length; i++) tr(list[i]);
++  }
++  walk(document.body);
++  try {
++    new MutationObserver(function (muts) {
++      for (var i = 0; i < muts.length; i++) {
++        var m = muts[i];
++        if (m.type === "characterData") { tr(m.target); continue; }
++        for (var j = 0; j < m.addedNodes.length; j++) {
++          var node = m.addedNodes[j];
++          if (node.nodeType === 3) tr(node);
++          else if (node.nodeType === 1) walk(node);
++        }
++      }
++    }).observe(document.body, { childList: true, subtree: true, characterData: true });
++  } catch (e) {}
++})();
++</script>
++"""
++# --- 中文补丁结束 ---
+ 
+ def render_login_html(*, next_path: str = "", prefix: str = "") -> str:
+     """Return the full HTML for ``GET /login``.
+@@ -482,6 +545,20 @@ def render_login_html(*, next_path: str = "", prefix: str = "") -> str:
+     # it from the <main> element's data attribute, and rewrite the font
+     # URLs to stay inside the mount.  ``str.replace`` after ``str.format``
+     # avoids interfering with the CSS ``{{ }}`` doubling in the template.
++    if "</body>" in html_out:
++        try:
++            from agent.i18n import get_language as _hermes_login_lang
++            _login_lang = html.escape(str(_hermes_login_lang() or ""), quote=True)
++        except Exception:
++            _login_lang = ""
++        _lang_tag = (
++            '<script>window.__HERMES_LOGIN_LANG__="' + _login_lang + '";</script>'
++            if _login_lang
++            else ""
++        )
++        html_out = html_out.replace(
++            "</body>", _lang_tag + _ZH_LOGIN_SCRIPT + "</body>", 1
++        )
+     return _apply_proxy_prefix(html_out, prefix)
+ 
+ 

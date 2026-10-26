@@ -1,0 +1,43 @@
+diff --git a/web/src/components/AutoField.tsx b/web/src/components/AutoField.tsx
+index 18475fe8f4..40bf6ed13e 100644
+--- a/web/src/components/AutoField.tsx
++++ b/web/src/components/AutoField.tsx
+@@ -2,10 +2,15 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
+ import { Switch } from "@nous-research/ui/ui/components/switch";
+ import { Input } from "@nous-research/ui/ui/components/input";
+ import { Label } from "@nous-research/ui/ui/components/label";
++import { useI18n } from "@/i18n";
++import { CONFIG_DESC_ZH } from "@/i18n/configDescZh";
+ 
+ function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; schemaKey: string }) {
+   const keyPath = schemaKey.includes(".") ? schemaKey : "";
+-  const description = schema.description ? String(schema.description) : "";
++  const { locale } = useI18n();
++  const rawDescription = schema.description ? String(schema.description) : "";
++  const description =
++    locale === "zh" ? (CONFIG_DESC_ZH[schemaKey] ?? rawDescription) : rawDescription;
+ 
+   if (!keyPath && !description) return null;
+ 
+diff --git a/web/src/pages/ConfigPage.tsx b/web/src/pages/ConfigPage.tsx
+index 1de8fcf6ad..4bbf784ec1 100644
+--- a/web/src/pages/ConfigPage.tsx
++++ b/web/src/pages/ConfigPage.tsx
+@@ -49,6 +49,7 @@ import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
+ import { Input } from "@nous-research/ui/ui/components/input";
+ import { Badge } from "@nous-research/ui/ui/components/badge";
+ import { useI18n } from "@/i18n";
++import { CONFIG_DESC_ZH } from "@/i18n/configDescZh";
+ import { usePageHeader } from "@/contexts/usePageHeader";
+ import { PluginSlot } from "@/plugins";
+ import { errorMessage } from "@/lib/api-error";
+@@ -263,7 +264,8 @@ export default function ConfigPage() {
+           .includes(lowerSearch) ||
+         String(s.description ?? "")
+           .toLowerCase()
+-          .includes(lowerSearch)
++          .includes(lowerSearch) ||
++        String(CONFIG_DESC_ZH[key] ?? "").toLowerCase().includes(lowerSearch)
+       );
+     });
+   }, [isSearching, lowerSearch, schema]);

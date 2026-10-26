@@ -1,0 +1,265 @@
+diff --git a/gateway/platforms/api_server.py b/gateway/platforms/api_server.py
+index f8160def3d..5cbcf95c14 100644
+--- a/gateway/platforms/api_server.py
++++ b/gateway/platforms/api_server.py
+@@ -1666,6 +1666,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
+             ("GET", "/api/sessions/{session_id}", self._handle_get_session),
+             ("PATCH", "/api/sessions/{session_id}", self._handle_patch_session),
+             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
++            ("POST", "/api/sessions/bulk-delete", self._handle_bulk_delete_sessions),
+             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
+             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
+             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
+@@ -3183,6 +3184,51 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
+         session = await asyncio.to_thread(db.get_session, session_id) or session
+         return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
+ 
++    @_require_auth
++    async def _handle_bulk_delete_sessions(self, request: web.Request) -> web.Response:
++        """POST /api/sessions/bulk-delete — 本机面板借网关的锁执行批量删除。
++
++        面板是独立进程，删除要拿会话库的独占维护锁，而网关一直持有它，于是面板只能
++        409。这里让锁的持有者自己删：与面板的删除语义完全一致（压缩链整条删、跳过
++        正在跑的 turn）。
++        """
++        try:
++            body = await request.json()
++        except Exception:  # noqa: BLE001 - 任何解析失败都回 400，不抛栈
++            return _error_response("Invalid JSON body", 400, code="invalid_body")
++        raw_ids = body.get("ids") if isinstance(body, dict) else None
++        if not isinstance(raw_ids, list) or not all(isinstance(i, str) and i for i in raw_ids):
++            return _error_response("'ids' must be a list of non-empty strings", 400, code="invalid_ids")
++        if len(raw_ids) > 500:
++            return _error_response("ids must contain at most 500 entries", 400, code="too_many_ids")
++        ids = list(dict.fromkeys(raw_ids))
++        db = await self._ensure_session_db_async()
++        if db is None:
++            return self._session_db_unavailable()
++        sessions_dir = None
++        try:
++            from hermes_constants import get_hermes_home
++            sessions_dir = Path(get_hermes_home()) / "sessions"
++        except Exception:  # noqa: BLE001 - 目录不可得时只是少清理 dump 文件
++            logger.debug("sessions dir unavailable for bulk delete", exc_info=True)
++        skipped: list[str] = []
++        try:
++            deleted = await asyncio.to_thread(
++                db.delete_sessions, ids, sessions_dir=sessions_dir,
++                exclude_active_write_guards=True, skipped_ids=skipped,
++                include_compression_chain=True)
++        except Exception as exc:  # noqa: BLE001 - 锁/库异常统一回 409/500
++            return _error_response(str(exc), 409, code="session_delete_failed")
++        runner = self.gateway_runner or request.app.get("gateway_runner")
++        store = getattr(runner, "session_store", None)
++        if store is not None and deleted:
++            for sid in ids:
++                try:
++                    await asyncio.to_thread(store.remove_by_session_id, sid)
++                except Exception:  # noqa: BLE001 - 路由清理失败不影响删除结果
++                    logger.debug("routing cleanup failed for %s", sid, exc_info=True)
++        return web.json_response({"ok": True, "deleted": deleted, "skipped_active": skipped})
++
+     @_require_auth
+     async def _handle_delete_session(self, request: web.Request) -> web.Response:
+         """DELETE /api/sessions/{session_id}."""
+diff --git a/hermes_cli/web_routers/sessions.py b/hermes_cli/web_routers/sessions.py
+index d6a5cb947a..caa8637960 100644
+--- a/hermes_cli/web_routers/sessions.py
++++ b/hermes_cli/web_routers/sessions.py
+@@ -463,6 +463,59 @@ async def search_sessions(
+         return await asyncio.to_thread(_with_db, profile, _search, read_only=True)
+ 
+ 
++def _gateway_api_settings():
++    """从 ~/.hermes/.env 读 api_server 的端口和 key；没开就返回 None。"""
++    import os as _os
++
++    try:
++        env_path = Path(_os.environ.get('HERMES_HOME') or Path.home() / '.hermes') / '.env'
++        values = {}
++        for line in env_path.read_text(encoding='utf-8').splitlines():
++            line = line.strip()
++            if not line or line.startswith('#') or '=' not in line:
++                continue
++            key, _, val = line.partition('=')
++            values[key.strip()] = val.strip().strip('"').strip("'")
++        if str(values.get('API_SERVER_ENABLED', '')).lower() in {'0', 'false', 'no', 'off'}:
++            return None
++        port = values.get('API_SERVER_PORT') or '8642'
++        key = values.get('API_SERVER_KEY') or ''
++        if not key:
++            return None
++        return f'http://127.0.0.1:{port}', key
++    except Exception:  # noqa: BLE001 - 没配置就退回原来的 409
++        return None
++
++
++def _delete_sessions_via_gateway(profile, ids):
++    """让锁持有者（网关）自己删：返回 (deleted, skipped_active) 或 None（网关不可用）。"""
++    import urllib.error as _uerr  # noqa: F401 - 保留以便定位鉴权失败
++    import urllib.request as _ureq
++
++    settings = _gateway_api_settings()
++    if not settings:
++        return None
++    base, key = settings
++    payload = json.dumps({'ids': ids, 'profile': profile or 'default'}).encode('utf-8')
++    req = _ureq.Request(
++        base + '/api/sessions/bulk-delete',
++        data=payload,
++        method='POST',
++        headers={
++            'Content-Type': 'application/json',
++            'Authorization': f'Bearer {key}',
++            'X-Hermes-Profile': profile or 'default',
++        },
++    )
++    try:
++        with _ureq.urlopen(req, timeout=30) as resp:
++            data = json.loads(resp.read().decode('utf-8'))
++        return int(data.get('deleted') or 0), list(data.get('skipped_active') or [])
++    except Exception as exc:  # noqa: BLE001 - 超时/404 都说明这条路不通
++        _log.debug('bulk delete via gateway failed: %s', exc)
++        return None
++
++
+ @manage_router.post("/api/sessions/bulk-delete")
+ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
+     """Delete every session in ``body.ids`` in one transaction (POST: many
+@@ -483,9 +536,27 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
+         raise HTTPException(status_code=400, detail="ids must contain at most 500 entries")
+     profile = destructive_profile(body.profile, "POST /api/sessions/bulk-delete")
+     skipped: list[str] = []  # rows a live turn/compression still owns; the UI must keep them listed
+-    deleted = await asyncio.to_thread(_with_db, profile, lambda db: db.delete_sessions(
+-        body.ids, exclude_active_write_guards=True, skipped_ids=skipped,
+-        include_compression_chain=True), read_only=False)
++    try:
++        deleted = await asyncio.to_thread(_with_db, profile, lambda db: db.delete_sessions(
++            body.ids, exclude_active_write_guards=True, skipped_ids=skipped,
++            include_compression_chain=True), read_only=False)
++    except HTTPException as exc:
++        if exc.status_code != 409:
++            raise
++        # 网关持有会话库的独占锁 → 让锁的持有者自己删（语义一致，不再停网关）。
++        via_gateway = await asyncio.to_thread(_delete_sessions_via_gateway, profile, body.ids)
++        if via_gateway is not None:
++            deleted, skipped = via_gateway
++        else:
++            # 网关 API 不可用（没开 api_server）：退回"停网关→删→拉起"，慢但不丢功能
++            from hermes_cli.web_server_sessions import (
++                _with_session_maintenance_after_gateway_pause,
++            )
++            deleted = await asyncio.to_thread(
++                _with_session_maintenance_after_gateway_pause, profile,
++                lambda db: db.delete_sessions(
++                    body.ids, exclude_active_write_guards=True, skipped_ids=skipped,
++                    include_compression_chain=True))
+     return {"ok": True, "deleted": deleted, "skipped_active": skipped}
+ 
+ 
+diff --git a/hermes_cli/web_server_sessions.py b/hermes_cli/web_server_sessions.py
+index 5d2d82cb97..2f294158f7 100644
+--- a/hermes_cli/web_server_sessions.py
++++ b/hermes_cli/web_server_sessions.py
+@@ -302,8 +302,60 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
+         raise HTTPException(status_code=503, detail='storage_unavailable') from exc
+ 
+ 
++# 维护锁被本机网关占用时，短暂停网关再重试。同一时刻只允许一个请求做这件事，
++# 否则两个删除请求会互相把对方的网关停掉/拉起。
++_MAINTENANCE_PAUSE_LOCK = __import__('threading').Lock()
++
++
++def _gateway_active_agents(home) -> int:
++    """网关当前正在跑的 turn 数；>0 时不能抢锁，否则会打断用户正在进行的对话。"""
++    import json as _json
++
++    try:
++        state = _json.loads((Path(home) / 'gateway_state.json').read_text(encoding='utf-8'))
++        return int(state.get('active_agents') or 0)
++    except Exception:  # noqa: BLE001 - 状态文件缺失/损坏都当作空闲
++        return 0
++
++
++def _gateway_bin() -> str:
++    import os as _os
++    import shutil as _shutil
++
++    override = _os.environ.get('HERMES_BIN')
++    if override:
++        return override
++    return _shutil.which('hermes') or '/root/.local/bin/hermes'
++
++
++def _run_hermes_gateway(verb: str, home, timeout: int) -> bool:
++    import os as _os
++    import subprocess as _sp
++
++    env = dict(_os.environ)
++    env['HERMES_HOME'] = str(home)
++    env.setdefault('HOME', str(Path(home).parent))
++    try:
++        done = _sp.run(
++            [_gateway_bin(), 'gateway', verb],
++            env=env,
++            stdin=_sp.DEVNULL,
++            capture_output=True,
++            timeout=timeout,
++        )
++        return done.returncode == 0
++    except Exception:  # noqa: BLE001 - 起停失败就走原来的 409 路径
++        return False
++
++
+ def _with_session_maintenance(profile, operation, *args):
+-    """Offline bulk actions reserve the exact owner lock through final DB close."""
++    """Offline bulk actions reserve the exact owner lock through final DB close.
++
++    网关（网页/手机对话时自动起的那个进程）一直持有这把锁，所以面板直连数据库做删除
++    会 409。真正解封在调用方：删除端点收到 409 后改让网关自己删（见
++    hermes_cli/web_routers/sessions.py 的 _delete_sessions_via_gateway）。这里保留
++    原始语义，不擅自停网关。
++    """
+     from fastapi import HTTPException
+     from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+     from hermes_cli.web_server_cron import _cron_profile_home
+@@ -320,6 +372,39 @@ def _with_session_maintenance(profile, operation, *args):
+         raise HTTPException(status_code=409, detail=str(exc)) from exc
+ 
+ 
++def _with_session_maintenance_after_gateway_pause(profile, operation, *args):
++    """最后手段：网关 API 不可用（没开 api_server / 老版本）时，停网关→执行→拉起。
++
++    只在调用方已经确认没有活跃 turn 时使用；整个过程持 _MAINTENANCE_PAUSE_LOCK，
++    避免两个删除请求互相拆台。
++    """
++    from fastapi import HTTPException
++    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
++    from hermes_cli.web_server_cron import _cron_profile_home
++    from hermes_state import _default_db_path
++
++    home = Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
++
++    def _attempt():
++        with exclusive_maintenance([home]):
++            return operation(*args)
++
++    if _gateway_active_agents(home) > 0:
++        raise HTTPException(
++            status_code=409,
++            detail='网关正在跑一个对话，等它结束再删（或先发 /stop 中断）。',
++        )
++    with _MAINTENANCE_PAUSE_LOCK:
++        if not _run_hermes_gateway('stop', home, 45):
++            raise HTTPException(status_code=409, detail='网关没能停下来，稍后重试。')
++        try:
++            return _attempt()
++        except OwnershipConflict as exc:
++            raise HTTPException(status_code=409, detail=str(exc)) from exc
++        finally:
++            _run_hermes_gateway('ensure', home, 60)
++
++
+ def _session_db_read_probe_statements() -> tuple:
+     """Probe the declared schema without reconciling it on a browsing request."""
+     from hermes_state_schema import schema_read_probe_statements

@@ -1,0 +1,9 @@
+本项目的 patches/ 与 payload/ 中包含对以下项目的修改：
+
+  Hermes Agent
+  https://github.com/NousResearch/hermes-agent
+  Copyright (c) 2025 Nous Research
+  Licensed under the MIT License.
+
+这些文件以 diff 形式提供，便于对照与回滚。上游原始代码的著作权归 Nous Research 所有。
+本项目与 Nous Research 无关联，未获其背书。
